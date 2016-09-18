@@ -14,7 +14,7 @@ data = torch.load('save/spiral.t7')
 local N  = data:size(1)
 local Dy = data:size(2)
 local Dx = 2
-local batch = 1000
+local batch = 2500
 local batchScale = N/batch
 local eta = 0.001
 local eta_latent = 0.1
@@ -32,16 +32,14 @@ function createNetwork(Dy, Dx)
 	local hidden = input
 				   - nn.Linear(Dy, hiddenSize)
 				   - nn.Tanh()
-				   - nn.Linear(hiddenSize, hiddenSize)
-				   - nn.Tanh()
 
 	local hy    = hidden
 				   - nn.Linear(hiddenSize, Dx)
 	local Jy    = hidden
 				   - nn.Linear(hiddenSize, Dx)  -- logVar
-				   - nn.MulConstant(0.1)
+				   - nn.MulConstant(0.01)
 				   - nn.Tanh()
-				   - nn.MulConstant(10)
+				   - nn.MulConstant(100)
 				   - nn.Exp()					-- Var  
 				   - nn.MulConstant(-0.5)		-- Jy
 
@@ -115,10 +113,10 @@ local l0 = torch.Tensor(Dx):fill(1)
 local a0 = torch.Tensor(Dx):fill(1)
 local b0 = torch.Tensor(Dx):fill(1)
 NG:setPrior(m0, l0, a0, b0)
-dir:setPrior(100)
+dir:setPrior(1000)
 
 -- Initialise parameters
-local m1 = torch.rand(K, Dx)
+local m1 = torch.rand(K, Dx):add(-0.5):mul(10)
 local l1 = torch.Tensor(K, Dx):fill(1)
 local a1 = torch.Tensor(K, Dx):fill(1)
 local b1 = torch.Tensor(K, Dx):fill(1)
@@ -139,7 +137,7 @@ local container = nn.Container()
 				  
 
 local ReconCrit = nn.GaussianCriterion( batchScale )
-local KLCrit    = nn.KLCriterion( 0.0*batchScale )
+local KLCrit    = nn.KLCriterion( 0.0 * batchScale )
 
 local params, gradParams = container:getParameters()
 
@@ -185,14 +183,14 @@ function feval(param)
 			break
 		end
 		llh_prev = sumllh
+		if i == max_iter then
+			print('max iter reach')
+		end
+
 	end
 	
 	-- Compute Mixture stats
 	local Txz = gaussian:getMixtureStats(phi, Tx, batchScale)
-
-	-- Update global parameters
-	NG:backward(Txz)
-	dir:backward(Txz)
 
 	-- Do sampling
 	local rand  = torch.randn(var_x:size())
@@ -206,18 +204,25 @@ function feval(param)
 	local gradRecon = ReconCrit:backward(recon, y)
 	local gradXs    = generator:backward(xs, gradRecon)
 	local gradMean, gradVar, __ = unpack( sampler:backward({mean_x, var_x, rand}, gradXs ) )
-	local gradHy, gradJy, __ = unpack( latentGMM:backward({hy, Jy, Ehk, EJk}, {gradMean, gradVar}) )
+	local gradHy, gradJy, gradEhk, gradEJk = unpack( latentGMM:backward({hy, Jy, Ehk, EJk}, {gradMean, gradVar}) )
 	recogniser:backward(y, {gradHy, gradJy})
 	
+	-- Update global parameters
+	--local gradPHI, gradHK, gradJK = unpack( globalMixing:backward({phi, E_NG[1], E_NG[2]} ,{gradEhk, gradEJk}))
+	--NG:backward(Txz, {gradHK, gradJK}) -- give NaN for sgd optimiser
+	NG:backward(Txz)
+	dir:backward(Txz)
+
 
 	local var_k = EJk:clone():mul(-2):pow(-1)
 	local mean_k = Ehk:clone():cmul(var_k)
-	local KLLoss = KLCrit:forward({mean_x, var_x},{mean_k, var_k})
+	local KLLoss = KLCrit:forward({mean_x, var_x},{}  )--, {mean_k, var_k})
 	
-	local gradMean, gradVar  = unpack( KLCrit:backward({mean_x, var_x},{mean_k, var_k}) )
-	local gradHy, gradJy, __ = unpack( latentGMM:backward({hy, Jy, Ehk, EJk}, {gradMean, gradVar}) )
+	local gradMean, gradVar  = unpack( KLCrit:backward({mean_x, var_x},{} ) )--,{mean_k, var_k}) )
+	local gradHy, gradJy, gradEhk, gradEJk = unpack( latentGMM:backward({hy, Jy, Ehk, EJk}, {gradMean, gradVar}) )
 	recogniser:backward(y, {gradHy, gradJy})
 	
+
 
 	local loss   = reconLoss + KLLoss
 	return loss, gradParams

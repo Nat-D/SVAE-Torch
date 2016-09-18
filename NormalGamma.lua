@@ -53,6 +53,11 @@ end
 function NormalGamma:accGradParameters(input, gradOutput, scale)
 	-- Accumulate Natural gradient
 	self.gradWeight:add(self.weight):add(-1, self.prior):add(-1, input)
+	
+	if gradOutput then
+		self.gradWeight[1]:add(-1, gradOutput[1])
+		self.gradWeight[2]:add(-1, gradOutput[2])
+	end
 end
 
 function NormalGamma:getBasicParameters()
