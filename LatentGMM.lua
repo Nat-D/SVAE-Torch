@@ -14,14 +14,14 @@ data = torch.load('save/spiral.t7')
 local N  = data:size(1)
 local Dy = data:size(2)
 local Dx = 2
-local batch = 100
+local batch = 1000
 local batchScale = N/batch
 local eta = 0.001
 local eta_latent = 0.1
 local optimiser = 'adam'
 local latentOptimiser = 'sgd'
 local max_Epoch = 10000
-local K = 10
+local K = 5
 local max_iter = 500
 
 -- Network 
@@ -233,6 +233,7 @@ for epoch = 1, max_Epoch do
 	indices = torch.randperm(N):long():split(batch)
 
 	local recon = torch.Tensor():resizeAs(data):zero()
+	local labels = torch.Tensor():resize(N):zero()
 	local x_sample = torch.Tensor():resize(N, Dx):zero()
 	local Loss = 0.0
 
@@ -245,11 +246,13 @@ for epoch = 1, max_Epoch do
 
 		recon[{ { batch*(t-1) + 1, batch*t },{}}]    = generator.output[1]
 		x_sample[{ { batch*(t-1) + 1, batch*t },{}}] = sampler.output
+		labels[{{ batch*(t-1) + 1, batch*t }}]       = label:assignLabel()
+
 		Loss = Loss + loss[1]
 	end
 
 	print("Epoch: " .. epoch .. " Loss: " .. Loss/N )
-	
+	torch.save('save/label.t7', labels)
 	torch.save('save/recon.t7', recon)
 	torch.save('save/xs.t7', x_sample)
 

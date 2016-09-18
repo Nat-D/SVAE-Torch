@@ -33,3 +33,8 @@ function Label:setParameters(llh, E_dir)
 
 	return self.phi
 end
+
+function Label:assignLabel()
+	local _, idx = self.phi:max(1)
+	return idx:view(self.N)
+end
