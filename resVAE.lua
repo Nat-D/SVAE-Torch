@@ -3,6 +3,8 @@ require 'GaussianCriterion'
 require 'optim'
 require 'nngraph'
 require 'KLCriterion'
+local nninit = require 'nninit'
+
 
 torch.manualSeed(1)
 data = torch.load('save/spiral.t7')
@@ -12,23 +14,38 @@ local Dy = data:size(2)
 local Dx = 2
 local batch = 100
 local batchScale = N/batch
-local eta = 0.001
+local eta = 0.0001
 local optimiser = 'adam'
 local max_Epoch = 500
 
 
+-- ResNet 
+function resNetBlock(inputSize, hiddenSize )
+	local input = - nn.Identity()
+	local resBranch  = input 
+					  - nn.Linear(inputSize, hiddenSize):init('weight', nninit.normal, 0,0.001)
+					  									:init('bias' , nninit.normal, 0, 0.001)
+					  - nn.Tanh()
+					  - nn.Linear(hiddenSize, inputSize):init('weight', nninit.normal, 0,0.001)
+					  									:init('bias' , nninit.normal, 0, 0.001)
+	local skipBranch = input 
+					  - nn.Identity()
+	local output 	 = {resBranch, skipBranch}
+						- nn.CAddTable() 
+	return nn.gModule({input}, {output})
+end
+
 -- Network 
 function createNetwork(Dy, Dx)
-	local hiddenSize = 200
+	local hiddenSize = 100
 	-- Recogniser
 	local input  = - nn.View(-1, Dy)
 	local hidden = input
-				   - nn.Linear(Dy, hiddenSize)
-				   - nn.ReLU(true)
+				   - resNetBlock(Dy, hiddenSize)			
 	local mean   = hidden
-				   - nn.Linear(hiddenSize, Dx)
+				  - resNetBlock(Dy, hiddenSize)
 	local logVar = hidden
-				   - nn.Linear(hiddenSize, Dx)
+				  - nn.Linear(Dy, Dy):init('bias', nninit.addConstant, -5)
 
 	local recogniser = nn.gModule( {input}, {mean, logVar})
 
@@ -46,17 +63,20 @@ function createNetwork(Dy, Dx)
 	-- Generator
 	local X_sample   = - nn.Identity()
 	local h          = X_sample
-					   - nn.Linear(Dx, hiddenSize)
-					   - nn.ReLU(true)
+					   - resNetBlock(Dy, hiddenSize)
 	local recon_mean = h
-					   - nn.Linear(hiddenSize, Dy)
+					  - resNetBlock(Dy, hiddenSize)
 	local recon_logVar = h
-						- nn.Linear(hiddenSize, Dy) 
+					  - nn.Linear(Dy, Dy):init('bias', nninit.addConstant, -5)
+
 
 	local generator = nn.gModule({X_sample}, {recon_mean, recon_logVar})
 
 	return recogniser, sampler, generator
 end
+
+
+
 
 local recogniser, sampler, generator = createNetwork(Dy, Dx)
 local container = nn.Container()
@@ -80,9 +100,10 @@ function feval(x)
 	container:zeroGradParameters()
 
 	local mean, logVar = unpack( recogniser:forward(y) )
+
 	
 	local std   = logVar:clone():mul(0.5):exp()
-	local rand  = torch.randn(std:size())
+	local rand  = torch.randn(std:size()):mul(1.0)
 	local xs    = sampler:forward({mean, std, rand})
 
 	local recon = generator:forward(xs)

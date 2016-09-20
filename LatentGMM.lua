@@ -7,45 +7,49 @@ require 'Dirichlet'
 require 'NormalGamma'
 require 'Gaussian'
 require 'Label'
+local nninit = require 'nninit'
+
+
+
 
 torch.manualSeed(1)
 data = torch.load('save/spiral.t7')
 
+local mnist = require 'mnist'
+--data = mnist.traindataset().data:div(255):double()
+--data = data:view(data:size(1), data:size(2)*data:size(3))
+
+
 local N  = data:size(1)
 local Dy = data:size(2)
 local Dx = 2
-local batch = 2500
+local batch = 100
 local batchScale = N/batch
 local eta = 0.001
 local eta_latent = 0.1
 local optimiser = 'adam'
 local latentOptimiser = 'sgd'
 local max_Epoch = 10000
-local K = 5
+local K = 15
 local max_iter = 500
 
--- Network 
-function createNetwork(Dy, Dx)
-	local hiddenSize = 64
-	-- Recogniser
-	local input  = - nn.View(-1, Dy)
-	local hidden = input
-				   - nn.Linear(Dy, hiddenSize)
-				   - nn.Tanh()
+-- ResNet 
+function resNetBlock(inputSize, hiddenSize )
+	local input = - nn.Identity()
+	local resBranch  = input 
+					  - nn.Linear(inputSize, hiddenSize):init('weight', nninit.normal, 0,0.001)
+					  									:init('bias' , nninit.normal, 0, 0.001)
+					  - nn.Tanh()
+					  - nn.Linear(hiddenSize, inputSize):init('weight', nninit.normal, 0,0.001)
+					  									:init('bias' , nninit.normal, 0, 0.001)
+	local skipBranch = input 
+					  - nn.Identity()
+	local output 	 = {resBranch, skipBranch}
+						- nn.CAddTable() 
+	return nn.gModule({input}, {output})
+end
 
-	local hy    = hidden
-				   - nn.Linear(hiddenSize, Dx)
-	local Jy    = hidden
-				   - nn.Linear(hiddenSize, Dx)  -- logVar
-				   - nn.MulConstant(0.01)
-				   - nn.Tanh()
-				   - nn.MulConstant(100)
-				   - nn.Exp()					-- Var  
-				   - nn.MulConstant(-0.5)		-- Jy
-
-	local recogniser = nn.gModule( {input}, {hy, Jy})
-
-	-- LatentGMM
+function globalMixing()
 	local phi = - nn.Identity() -- [K, N ]
 	local hk  = - nn.Identity() -- [K, Dx]
 	local Jk  = - nn.Identity() -- [K, Dx]
@@ -54,9 +58,10 @@ function createNetwork(Dy, Dx)
 	local Ehk  = {phiT, hk} - nn.MM() -- [N, Dx]
 	local EJk  = {phiT, Jk} - nn.MM() -- [N, Dx]
 
-	local globalMixing = nn.gModule({phi, hk, Jk}, {Ehk, EJk})
-	-- 
+	return nn.gModule({phi, hk, Jk}, {Ehk, EJk})
+end
 
+function gaussainMeanfield()
 	local hy  = - nn.Identity() -- [N, Dx]
 	local Jy  = - nn.Identity() -- [N, Dx]
 	local Ehk = - nn.Identity()
@@ -65,39 +70,70 @@ function createNetwork(Dy, Dx)
 	local hx = {hy, Ehk} - nn.CAddTable() -- mu/var
 	local Jx = {Jy, EJk} - nn.CAddTable() -- -1/2(1/var)
  
-	local var   = Jx - nn.MulConstant(-2) 
+	local var   = Jx - nn.MulConstant(-2)
 				     - nn.Power(-1)
 	local mean  = {hx, var} 
 					 - nn.CMulTable()
 
-	local latentGMM = nn.gModule({hy, Jy, Ehk, EJk}, {mean, var})
+	return nn.gModule({hy, Jy, Ehk, EJk}, {mean, var})
+end
 
+function createSampler()
 	-- Sampler
 	local mean   = - nn.Identity()
 	local var    = - nn.Identity() 
 	local rand   = - nn.Identity()
-	local std    = var - nn.Power(-1)
+	local std    = var - nn.Power(0.5)
 	local noise  = {std, rand}
 				   - nn.CMulTable()
 	local x 	 = {mean, noise}
 				   - nn.CAddTable()			   
 
-	local sampler = nn.gModule({mean, var, rand}, {x})
+	return nn.gModule({mean, var, rand}, {x})
+end
+
+-- Network 
+function createNetwork(Dy, Dx)
+	local hiddenSize = 100
+	-- Recogniser
+	local input  = - nn.Identity()
+	local hidden = input
+				   - resNetBlock(Dy, hiddenSize)
+				
+	local mean     = hidden
+				   - resNetBlock(Dy, hiddenSize)	
+
+	local logVar   = hidden
+					- nn.Linear(Dy, hiddenSize)
+					- nn.Tanh()
+					- nn.Linear(hiddenSize, Dy):init('bias' , nninit.normal, -5, 0.001)
+					  						   
+
+	local Jy 	   = logVar
+					- nn.Exp()  -- Var
+					- nn.Power(-1) -- 1/var
+					- nn.MulConstant(-0.5) --  - 1/2Var
+	local hy 	   = {mean, Jy}
+					- nn.CMulTable() -- mean/(-2var)
+					- nn.MulConstant(-2) -- mean/var
+
+	local recogniser = nn.gModule( {input}, {hy, Jy})
 
 	-- Generator
 	local X_sample   = - nn.Identity()
 	local h          = X_sample
-					   - nn.Linear(Dx, hiddenSize)
-					   - nn.Tanh()
+					   - resNetBlock(Dy, hiddenSize)	
 
 	local recon_mean =   h
-					   - nn.Linear(hiddenSize, Dy)
+					   - resNetBlock(Dy, hiddenSize)	
 	local recon_logVar = h
-						- nn.Linear(hiddenSize, Dy) 
+						- nn.Linear(Dy, hiddenSize)
+						- nn.Tanh()
+						- nn.Linear(hiddenSize, Dy)
 
 	local generator = nn.gModule({X_sample}, {recon_mean, recon_logVar})
 
-	return recogniser, sampler, generator, latentGMM, globalMixing
+	return recogniser, generator
 end
 
 
@@ -116,11 +152,11 @@ NG:setPrior(m0, l0, a0, b0)
 dir:setPrior(1000)
 
 -- Initialise parameters
-local m1 = torch.rand(K, Dx):add(-0.5):mul(10)
+local m1 = torch.rand(K, Dx):add(-0.5):mul(2)
 local l1 = torch.Tensor(K, Dx):fill(1)
-local a1 = torch.Tensor(K, Dx):fill(1)
+local a1 = torch.Tensor(K, Dx):fill(10)
 local b1 = torch.Tensor(K, Dx):fill(1)
-local pi1 = torch.rand(K):fill(10)
+local pi1 = torch.randn(K)
 NG:setParameters(m1, l1, a1, b1)
 dir:setParameters(pi1)
 
@@ -130,14 +166,18 @@ local latentContainer = nn.Container()
 local latentParams, gradLatentParams = latentContainer:getParameters()
 
 
-local recogniser, sampler, generator, latentGMM, globalMixing = createNetwork(Dy, Dx)
+local recogniser, generator = createNetwork(Dy, Dx)
+local sampler = createSampler()
+local latentGMM = gaussainMeanfield()
+local globalMixing = globalMixing()
+
 local container = nn.Container()
 				  :add(recogniser)
 				  :add(generator)
 				  
 
 local ReconCrit = nn.GaussianCriterion( batchScale )
-local KLCrit    = nn.KLCriterion( 0.0 * batchScale )
+local KLCrit    = nn.KLCriterion(  batchScale )
 
 local params, gradParams = container:getParameters()
 
@@ -193,7 +233,7 @@ function feval(param)
 	local Txz = gaussian:getMixtureStats(phi, Tx, batchScale)
 
 	-- Do sampling
-	local rand  = torch.randn(var_x:size())
+	local rand  = torch.randn(var_x:size()):mul(1)
 	local xs    = sampler:forward({mean_x, var_x, rand})
 	
 	-----------------------
@@ -201,6 +241,8 @@ function feval(param)
 	local recon     = generator:forward(xs)
 	local reconLoss = ReconCrit:forward(recon, y)
 
+
+	
 	local gradRecon = ReconCrit:backward(recon, y)
 	local gradXs    = generator:backward(xs, gradRecon)
 	local gradMean, gradVar, __ = unpack( sampler:backward({mean_x, var_x, rand}, gradXs ) )
@@ -213,12 +255,12 @@ function feval(param)
 	NG:backward(Txz)
 	dir:backward(Txz)
 
-
+	
 	local var_k = EJk:clone():mul(-2):pow(-1)
 	local mean_k = Ehk:clone():cmul(var_k)
-	local KLLoss = KLCrit:forward({mean_x, var_x},{}  )--, {mean_k, var_k})
+	local KLLoss = KLCrit:forward({mean_x, var_x}, {mean_k, var_k})
 	
-	local gradMean, gradVar  = unpack( KLCrit:backward({mean_x, var_x},{} ) )--,{mean_k, var_k}) )
+	local gradMean, gradVar  = unpack( KLCrit:backward({mean_x, var_x}, {mean_k, var_k}) )
 	local gradHy, gradJy, gradEhk, gradEJk = unpack( latentGMM:backward({hy, Jy, Ehk, EJk}, {gradMean, gradVar}) )
 	recogniser:backward(y, {gradHy, gradJy})
 	
@@ -233,9 +275,10 @@ function Lfeval(params)
 end
 
 
+
 for epoch = 1, max_Epoch do
 
-	indices = torch.randperm(N):long():split(batch)
+	local indices = torch.randperm(N):long():split(batch)
 
 	local recon = torch.Tensor():resizeAs(data):zero()
 	local labels = torch.Tensor():resize(N):zero()
