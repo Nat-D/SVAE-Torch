@@ -12,25 +12,24 @@ local nninit = require 'nninit'
 
 
 
-torch.manualSeed(1)
+torch.manualSeed(2)
 data = torch.load('save/spiral.t7')
 
 local mnist = require 'mnist'
 --data = mnist.traindataset().data:div(255):double()
 --data = data:view(data:size(1), data:size(2)*data:size(3))
 
-
 local N  = data:size(1)
 local Dy = data:size(2)
 local Dx = 2
 local batch = 100
 local batchScale = N/batch
-local eta = 0.001
+local eta = 0.0001
 local eta_latent = 0.1
 local optimiser = 'adam'
 local latentOptimiser = 'sgd'
 local max_Epoch = 10000
-local K = 15
+local K = 20
 local max_iter = 500
 
 -- ResNet 
@@ -149,14 +148,14 @@ local l0 = torch.Tensor(Dx):fill(1)
 local a0 = torch.Tensor(Dx):fill(1)
 local b0 = torch.Tensor(Dx):fill(1)
 NG:setPrior(m0, l0, a0, b0)
-dir:setPrior(1000)
+dir:setPrior(1)
 
 -- Initialise parameters
 local m1 = torch.rand(K, Dx):add(-0.5):mul(2)
 local l1 = torch.Tensor(K, Dx):fill(1)
 local a1 = torch.Tensor(K, Dx):fill(10)
 local b1 = torch.Tensor(K, Dx):fill(1)
-local pi1 = torch.randn(K)
+local pi1 = torch.randn(K):div(0.1)
 NG:setParameters(m1, l1, a1, b1)
 dir:setParameters(pi1)
 
@@ -303,7 +302,10 @@ for epoch = 1, max_Epoch do
 	torch.save('save/label.t7', labels)
 	torch.save('save/recon.t7', recon)
 	torch.save('save/xs.t7', x_sample)
-
+	
+	local mixing = dir:parameters()[1]
+	mixing = mixing/mixing:sum()
+	torch.save('save/mixing.t7', mixing)
 	-- Latent plot --
 	local m, l, a, b = unpack(NG:getBasicParameters())
 	local cov = torch.Tensor(K, Dx, Dx)

@@ -35,7 +35,7 @@ while plotting:
     ax2.scatter(y[:,0], y[:, 1], marker='.' , s = 5 )
     y_recon = torchfile.load('save/recon.t7')
     label   = torchfile.load('save/label.t7')
-
+    mix = torchfile.load('save/mixing.t7')
     # draw ellipse
     cov = torchfile.load('save/cov.t7')
     def eigsorted(cov):
@@ -49,7 +49,7 @@ while plotting:
         # Width and height are "full" widths, not radius
         nstd = 2.0
         width, height = 2 * nstd * np.sqrt(vals)
-        ellip = Ellipse(xy= mean[i], width=width, height=height, angle=theta, alpha=0.1, color=colors[i])
+        ellip = Ellipse(xy= mean[i], width=width, height=height, angle=theta, alpha=mix[i], color=colors[i])
 
         ax.add_artist(ellip)
 
